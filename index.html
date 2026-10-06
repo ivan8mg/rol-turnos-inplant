@@ -472,9 +472,9 @@ function render(){
       let sub="", subc="", tip=(o&&o.n?o.n+" · ":"")+(o?"Patrón: "+(base(p.id,d)||"descanso"):"");
       if(o && o.for){ sub="x "+o.for; tip+=" · Cubre a "+label(o.for); }
       else if(!w && working(base(p.id,d))){ const cv=coverersOf(p.id,d);
-        if(cv.length){ sub="→"+cv.join(","); tip+=" · Lo cubre "+cv.map(label).join(", "); }
+        if(cv.length){ sub="→"+cv.join(","); tip+=" · Lo cubre "+cv.map(x=>label(x)).join(", "); }
         else if(count(base(p.id,d),d)<req(base(p.id,d),d)){ sub="SIN"; subc="miss"; tip+=" · Sin cobertura"; } }
-      else if(w){ const si=shortInfo(p.id,d); if(si){ if(si.ok){ sub=si.txt.replace(/:00/g,""); tip+=` · Día corto ${si.txt} (${si.hours} h)`; } else { sub="12h TE"; subc="miss"; tip+=` · Sin escalonar: ${si.miss.map(label).join(", ")} no está en su lugar → 12 h`; } } }
+      else if(w){ const si=shortInfo(p.id,d); if(si){ if(si.ok){ sub=si.txt.replace(/:00/g,""); tip+=` · Día corto ${si.txt} (${si.hours} h)`; } else { sub="12h TE"; subc="miss"; tip+=` · Sin escalonar: ${si.miss.map(x=>label(x)).join(", ")} no está en su lugar → 12 h`; } } }
       h+=`<td><button class="cell ${cls} ${o?"ov":""} ${extra?"te":""}" data-id="${p.id}" data-d="${iso(d)}" title="${esc(tip)}">${w?c:(ABS[c]?c:(o?"DESC":"·"))}${sub?`<small class="${subc}">${esc(sub)}</small>`:""}</button></td>`; }
     h+=`<td class="tot">${t}</td><td class="tot">${th}</td></tr>`;
   }
