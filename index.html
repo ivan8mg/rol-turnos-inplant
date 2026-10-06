@@ -136,6 +136,7 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
       <div class="field"><label class="lbl" for="month">Mes</label><input type="month" id="month"></div>
       <div class="field"><label class="lbl" for="limit">Tope legal h/sem</label><input type="number" id="limit" min="36" max="60" step="1"></div>
       <button id="autofill" title="Asigna la mejor opción para cada hueco del mes">Auto-cubrir huecos</button>
+      <button class="primary" id="pdf">Reporte PDF</button>
       <button id="export">Exportar CSV</button>
     </div>
   </header>
@@ -390,13 +391,23 @@ const BACKEND = {mode:"none", url:"", pin:""};
 let writeChain=Promise.resolve(), pending=0;
 function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
 function lsSet(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+// Traduce cada falla a un motivo concreto para saber qué corregir
+async function sheetsCall(url,opts){
+  if(!/^https:\/\/script\.google\.com\/macros\/s\/.+\/exec$/.test(BACKEND.url))
+    throw new Error("la URL no tiene el formato correcto. Debe empezar con https://script.google.com/macros/s/ y terminar en /exec");
+  let r; try{ r=await fetch(url,opts); }
+  catch(e){ throw new Error("no hubo respuesta de script.google.com. Revisa que la implementación tenga acceso 'Cualquier usuario' o que tu red no bloquee Google"); }
+  const txt=await r.text(); let j;
+  try{ j=JSON.parse(txt); }
+  catch(e){ throw new Error(/doGet|doPost/.test(txt) ? "el script no tiene el código guardado. Pega Code.gs, guarda y publica una nueva versión" : "Google respondió con una página en vez de datos. Cambia el acceso a 'Cualquier usuario' y publica una nueva versión"); }
+  if(!j.ok) throw new Error(j.error==="PIN incorrecto" ? "PIN incorrecto: el PIN de la app no coincide con el del script" : (j.error||"error de Google Sheets"));
+  return j;
+}
 async function sheetsGet(key){
-  const r=await fetch(`${BACKEND.url}?action=get&key=${encodeURIComponent(key)}&pin=${encodeURIComponent(BACKEND.pin)}`);
-  const j=await r.json(); if(!j.ok) throw new Error(j.error||"Error de Google Sheets"); return j.value;
+  const j=await sheetsCall(`${BACKEND.url}?action=get&key=${encodeURIComponent(key)}&pin=${encodeURIComponent(BACKEND.pin)}`); return j.value;
 }
 async function sheetsSet(key,value){
-  const r=await fetch(BACKEND.url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action:"set",key,value,pin:BACKEND.pin})});
-  const j=await r.json(); if(!j.ok) throw new Error(j.error||"Error de Google Sheets");
+  await sheetsCall(BACKEND.url,{method:"POST",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify({action:"set",key,value,pin:BACKEND.pin})});
 }
 function putDoc(key,body){
   if(BACKEND.mode==="claude") return state.db.doc(key).set(body);
@@ -445,7 +456,7 @@ async function loadAllMonths(){
 const normMonth = v => v ? {ov:v.ov||{}, ...(v.assign?{assign:v.assign}:{})} : {ov:{}};
 async function loadMonth(mk){
   try{ const v=await getDoc("months/"+mk); if(pending) return; state.months[mk]=normMonth(v); render(); }
-  catch(e){ status("No se pudo leer Google Sheets: "+e.message+". Revisa la URL y el PIN en Personal → Conexión."); }
+  catch(e){ status("No se pudo leer Google Sheets: "+e.message+"."); }
 }
 function status(t){ const s=$("#status"); s.hidden=!t; s.textContent=t||""; }
 function ensureMonths(){ const [y,m]=state.month.split("-").map(Number);
@@ -614,6 +625,117 @@ document.addEventListener("click",e=>{
   }
 });
 
+// ---------- reporte PDF ----------
+function loadScript(src){ return new Promise((ok,bad)=>{ if(document.querySelector(`script[src="${src}"]`)) return ok(); const s=document.createElement("script"); s.src=src; s.onload=ok; s.onerror=()=>bad(new Error("No se pudo cargar la librería de PDF")); document.head.appendChild(s); }); }
+async function ensurePdfLib(){
+  if(!(window.jspdf && window.jspdf.jsPDF)) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  if(!window.jspdf.jsPDF.API.autoTable) await loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js");
+  return window.jspdf.jsPDF;
+}
+const pdfTxt = s => String(s??"").replace(/[–—]/g,"-").replace(/→/g,"->").replace(/↔/g,"<->").replace(/✓/g,"").replace(/[^\x00-\xFF]/g,"");
+const dm = d => `${d.getDate()}/${d.getMonth()+1}`;
+function reportData(){
+  const mk=state.month, days=daysOfMonth(mk), y=days[0].getFullYear(), lim=legalLimit(y), hol=holidays(y), hr=hoursData();
+  // Tiempo extra con motivo
+  const te=[];
+  for(const r of hr.rows){
+    const emp=empOf(r.p.id,mk);
+    hr.weeks.forEach((w,i)=>{ const h=r.wk[i].h; if(h<=lim) return;
+      const why=[];
+      for(let k=0;k<7;k++){ const d=addDays(w.s,k), pos=posOfEmp(emp,mkey(d)); if(!pos) continue;
+        const c=code(pos,d), o=ov(pos,d); if(!working(c)) continue;
+        if(!working(base(pos,d))) why.push(`Turno extra ${dm(d)}${o&&o.for?" (cubre a "+label(o.for,mkey(d))+")":""}`);
+        const sd=SHORT[pos]; if(sd && sd.wd===wd(d) && reduction(d.getFullYear()) && c!==base(pos,d) && working(base(pos,d))) why.push(`${dm(d)} cubrió ${PLANTS[c.slice(2)]} en su día corto${o&&o.for?" (en lugar de "+label(o.for,mkey(d))+")":""}`);
+        const si=shortInfo(pos,d); if(si && !si.ok) why.push(`${dm(d)} sin día corto (${si.miss.map(x=>label(x,mkey(d))).join(", ")} no estaba)`);
+      }
+      if(!why.length && !SHORT[r.p.id]) why.push("Posición sin día corto escalonado (estructural)");
+      te.push([label(r.p.id), w.label, h, h-lim, why.join("; ")]);
+    });
+  }
+  // Ausencias agrupadas por rangos
+  const abs=[];
+  for(const p of OPS()){ let cur=null;
+    const flush=()=>{ if(cur){ abs.push(cur); cur=null; } };
+    for(const d of days){ const c=code(p.id,d), o=ov(p.id,d);
+      const t = ABS[c] ? c : (o && c==="" && working(base(p.id,d)) ? "DESC" : "");
+      if(!t){ flush(); continue; }
+      const cv=coverersOf(p.id,d);
+      if(cur && cur.t===t && iso(addDays(cur.to,1))===iso(d)){ cur.to=d; cur.n++; cv.forEach(x=>cur.cv.add(x)); if(!cv.length && working(base(p.id,d)) && count(base(p.id,d),d)<req(base(p.id,d),d)) cur.open++; }
+      else { flush(); cur={p,t,from:d,to:d,n:1,cv:new Set(cv),open:(!cv.length&&working(base(p.id,d))&&count(base(p.id,d),d)<req(base(p.id,d),d))?1:0}; }
+    }
+    flush();
+  }
+  const absNames={VAC:"Vacaciones",INC:"Incapacidad",PER:"Permiso",DESC:"Descanso"};
+  const absRows=abs.map(a=>[label(a.p.id), absNames[a.t], a.n===1?dm(a.from):`${dm(a.from)} al ${dm(a.to)}`, a.n, a.cv.size?[...a.cv].map(x=>label(x)).join(", "):(a.open?"Sin reemplazo":"Planta cubierta")]);
+  // Resumen de ausencias por persona
+  const absSum=OPS().map(p=>{ const cnt=t=>days.filter(d=>code(p.id,d)===t).length; return [label(p.id), cnt("VAC"), cnt("INC"), cnt("PER")]; }).filter(r=>r[1]+r[2]+r[3]>0);
+  // Coberturas
+  const cov=[];
+  for(const d of days) for(const p of POS){ const o=ov(p.id,d), c=code(p.id,d); if(!o||!working(c)) continue;
+    const b=base(p.id,d); if(c===b && !o.for) continue;
+    const tipo = p.mgr ? "Gerente" : !working(b) ? "Turno extra (TE)" : "Movido sin costo";
+    cov.push([`${WD[wd(d)]} ${dm(d)}`, `${c[0]==="D"?"Día":"Noche"} ${PLANTS[c.slice(2)]}`, label(p.id), o.for?label(o.for):"-", tipo]); }
+  const gaps=gapsOf(mk).map(g=>[`${WD[wd(g.d)]} ${dm(g.d)}`, `${g.slot[0]==="D"?"Día":"Noche"} ${PLANTS[g.slot.slice(2)]}`]);
+  const hoursRows=hr.rows.map(r=>[label(r.p.id), r.p.turn==="D"?"Día":"Noche", PLANTS[r.p.base], r.shifts, r.hours, ...r.wk.map(x=>x.h), r.te, r.hol]);
+  const tot=k=>hr.rows.reduce((a,r)=>a+r[k],0);
+  const mgrCov=POS.filter(p=>p.mgr).reduce((a,p)=>a+days.filter(d=>working(code(p.id,d))).length,0);
+  return {mk, y, lim, hr, te, absRows, absSum, cov, gaps, hoursRows,
+    kpi:[["Horas trabajadas",tot("hours")],["TE a pagar (h)",tot("te")],["Personas con TE",new Set(te.map(t=>t[0])).size],["Días de vacaciones",tot("vac")],["Días de incapacidad",tot("inc")],["Días de permiso",tot("per")],["Turnos en festivo",tot("hol")],["Coberturas de gerentes",mgrCov],["Huecos sin cubrir",gaps.length]]};
+}
+async function makePdf(){
+  const jsPDF=await ensurePdfLib(), R=reportData();
+  const doc=new jsPDF({orientation:"portrait",unit:"pt",format:"letter"});
+  const W=doc.internal.pageSize.getWidth(), M=40, navy=[31,56,100];
+  const T=s=>pdfTxt(s);
+  let sec=1; const head=(t)=>{ t=`${++sec}. ${t}`; const yy=(doc.lastAutoTable?doc.lastAutoTable.finalY:0)+26; let y=yy; if(y>680){ doc.addPage(); y=60; } doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(...navy); doc.text(T(t),M,y); doc.setTextColor(0); return y+8; };
+  const tbl=(startY,headRow,body,opts={})=>doc.autoTable({startY,head:[headRow.map(T)],body:body.map(r=>r.map(T)),margin:{left:M,right:M},styles:{font:"helvetica",fontSize:8,cellPadding:3,overflow:"linebreak"},headStyles:{fillColor:navy,textColor:255,fontStyle:"bold"},alternateRowStyles:{fillColor:[243,245,247]},...opts});
+  // Encabezado
+  doc.setFont("helvetica","bold"); doc.setFontSize(18); doc.setTextColor(...navy);
+  doc.text(T("Rol de Turnos In-Plant"),M,52);
+  doc.setFontSize(12); doc.setTextColor(60); doc.text(T(`Reporte mensual de ${mesLabel(R.mk)}`),M,70);
+  doc.setFont("helvetica","normal"); doc.setFontSize(9);
+  doc.text(T(`Generado el ${new Date().toLocaleDateString("es-MX")} · Tope legal ${R.lim} h/semana (${R.y}) · Turnos de 12 h con día corto escalonado`),M,84);
+  doc.setTextColor(0);
+  // KPIs en 3 columnas
+  const bw=(W-2*M-16)/3; R.kpi.forEach(([l,v],i)=>{ const x=M+(i%3)*(bw+8), y=98+Math.floor(i/3)*42;
+    doc.setDrawColor(210); doc.setFillColor(i===1&&v>0?253:248, i===1&&v>0?236:249, i===1&&v>0?234:251); doc.roundedRect(x,y,bw,36,4,4,"FD");
+    doc.setFontSize(8); doc.setTextColor(90); doc.text(T(l),x+8,y+13); doc.setFont("helvetica","bold"); doc.setFontSize(14); doc.setTextColor(i===1&&v>0?180:20, 30, 30); doc.text(String(v),x+8,y+30); doc.setFont("helvetica","normal"); doc.setTextColor(0); });
+  let y=98+3*42+18;
+  doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(...navy); doc.text(T("1. Tiempo extra a pagar"),M,y); doc.setTextColor(0);
+  if(R.te.length) tbl(y+8,["Empleado","Semana","Horas sem.","Horas extra","Motivo"],R.te,{columnStyles:{2:{halign:"right"},3:{halign:"right",fontStyle:"bold",textColor:[180,30,30]},4:{cellWidth:230}}});
+  else { doc.setFont("helvetica","normal"); doc.setFontSize(9); doc.text(T("Nadie rebasó el tope legal este mes."),M,y+16); doc.lastAutoTable={finalY:y+20}; }
+  tbl(head("Horas por empleado"),["Empleado","Turno","Planta","Turnos","Horas mes",...R.hr.weeks.map(w=>"Sem "+w.label),"TE","Festivos"],R.hoursRows,{styles:{font:"helvetica",fontSize:7.5,cellPadding:2.5},columnStyles:{0:{cellWidth:110}},
+    didParseCell:(d)=>{ if(d.section==="body"){ const wkStart=5, n=R.hr.weeks.length; if(d.column.index>=wkStart && d.column.index<wkStart+n && Number(d.cell.raw)>R.lim){ d.cell.styles.textColor=[180,30,30]; d.cell.styles.fontStyle="bold"; } if(d.column.index===wkStart+n && Number(d.cell.raw)>0){ d.cell.styles.textColor=[180,30,30]; d.cell.styles.fontStyle="bold"; } } }});
+  if(R.absSum.length) tbl(head("Resumen de ausencias por empleado"),["Empleado","Días de vacaciones","Días de incapacidad","Días de permiso"],R.absSum,{columnStyles:{1:{halign:"center"},2:{halign:"center"},3:{halign:"center"}}});
+  tbl(head("Detalle de ausencias y quién cubrió"),["Empleado","Tipo","Fechas","Días","Cubierto por"],R.absRows.length?R.absRows:[["Sin ausencias registradas","","","",""]]);
+  tbl(head("Coberturas y cambios del mes"),["Día","Turno y planta","Quién cubrió","En lugar de","Tipo"],R.cov.length?R.cov:[["Sin coberturas","","","",""]]);
+  if(R.gaps.length) tbl(head("Huecos pendientes de cubrir"),["Día","Turno y planta"],R.gaps,{headStyles:{fillColor:[180,30,30],textColor:255}});
+  // Calendario en hoja horizontal
+  const days=daysOfMonth(R.mk);
+  doc.addPage("letter","landscape"); const LW=doc.internal.pageSize.getWidth();
+  doc.setFont("helvetica","bold"); doc.setFontSize(12); doc.setTextColor(...navy); doc.text(T(`Calendario de ${mesLabel(R.mk)}`),M,40); doc.setTextColor(0);
+  const short=c=>!c?"":ABS[c]?c:working(c)?c:"";
+  const calBody=POS.map(p=>[label(p.id), ...days.map(d=>{ const c=code(p.id,d), o=ov(p.id,d); return c===""&&o&&working(base(p.id,d))?"DES":short(c); })]);
+  doc.autoTable({startY:50,head:[["Empleado",...days.map(d=>`${d.getDate()}\n${WD[wd(d)].slice(0,2)}`)].map(T)],body:calBody.map(r=>r.map(T)),margin:{left:20,right:20},
+    styles:{font:"helvetica",fontSize:5.5,cellPadding:1.2,halign:"center",overflow:"hidden"},headStyles:{fillColor:navy,textColor:255,fontSize:6},columnStyles:{0:{cellWidth:78,halign:"left"}},
+    didParseCell:(d)=>{ if(d.section!=="body"||d.column.index===0) return; const v=String(d.cell.raw||"");
+      if(v.startsWith("D-")) d.cell.styles.fillColor=[253,233,184]; else if(v.startsWith("N-")) d.cell.styles.fillColor=[201,211,242];
+      else if(v==="VAC") d.cell.styles.fillColor=[205,235,211]; else if(v==="INC"||v==="PER"||v==="DES") d.cell.styles.fillColor=[246,207,196]; }});
+  doc.setFontSize(7); doc.text(T("D = 06:00-18:00 · N = 18:00-06:00 · COM Componentes · FOR Forjas · ENC Enco · CAR Cardanes · VAC vacaciones · INC incapacidad · PER permiso · DES descanso"),20,doc.lastAutoTable.finalY+12);
+  // Pie de página
+  const n=doc.getNumberOfPages(); for(let i=1;i<=n;i++){ doc.setPage(i); const pw=doc.internal.pageSize.getWidth(), ph=doc.internal.pageSize.getHeight();
+    doc.setFontSize(7); doc.setTextColor(120); doc.text(T("TE = horas arriba del tope legal semanal, pagadas al doble según la reforma a la LFT (máx. 12 h/sem). Validar criterios con RH/Jurídico."),M,ph-20); doc.text(`${i} / ${n}`,pw-M,ph-20,{align:"right"}); }
+  return doc;
+}
+$("#pdf").addEventListener("click",async()=>{
+  const b=$("#pdf"); b.disabled=true; b.textContent="Generando…";
+  try{ const doc=await makePdf(), name=`reporte-turnos-${state.month}.pdf`;
+    if(state.downloads){ const r=await state.downloads.save({filename:name, data:doc.output("blob")}); if(r&&r.status==="saved") toast("Reporte guardado"); }
+    else { doc.save(name); toast("Reporte descargado"); } }
+  catch(e){ if(!e||(e.code!=="cancelled"&&e.code!=="declined")) toast("No se pudo generar el PDF: "+(e.message||e.code)); }
+  finally{ b.disabled=false; b.textContent="Reporte PDF"; }
+});
+
 // ---------- controles ----------
 function setMonth(mk){ state.month=mk; $("#month").value=mk; try{localStorage.setItem("rol.month",mk)}catch(e){} ensureMonths(); render(); }
 $("#month").addEventListener("change",e=>{ if(e.target.value) setMonth(e.target.value); });
@@ -671,7 +793,7 @@ setMonth(start);
 async function connectSheets(){
   BACKEND.mode="sheets"; for(const k in subs) delete subs[k];
   try{ applyRoster(await getDoc("config/roster")); status(""); await loadAllMonths(); ensureMonths(); render(); toast("Conectado a Google Sheets"); }
-  catch(e){ status("No se pudo conectar a Google Sheets: "+e.message); }
+  catch(e){ status("No se pudo conectar a Google Sheets: "+e.message+"."); }
 }
 (async()=>{
   const inClaude=!!window.claude;
