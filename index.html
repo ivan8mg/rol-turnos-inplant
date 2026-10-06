@@ -119,6 +119,11 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
 .rcard .d{font-size:.74rem;color:var(--muted)}
 .pat{font-family:var(--f-mono);font-size:.72rem;grid-column:1/-1;color:var(--muted)}
 .note{font-size:.8rem;color:var(--muted)}
+.swgrid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.swp{border:1px solid var(--line);border-radius:8px;padding:10px 12px;display:grid;gap:6px;min-width:0}
+.swp.warn{border-color:var(--warn);background:color-mix(in srgb,var(--warn) 8%,var(--surface))}
+.swp .who{font-weight:700;font-size:1rem}
+.swp .ba{display:grid;grid-template-columns:90px minmax(0,1fr);gap:8px;font-size:.84rem;align-items:baseline}
 .rotgrid{display:grid;gap:8px;grid-template-columns:repeat(auto-fill,minmax(250px,1fr))}
 .rp{display:flex;gap:8px;align-items:flex-start;padding:8px 10px;border:1px solid var(--line);border-radius:8px;cursor:pointer;font-size:.85rem}
 .toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:.85rem;z-index:50}
@@ -186,23 +191,28 @@ dialog::backdrop{background:rgba(10,15,20,.45)}
   <section id="p-ros" hidden>
     <div class="card">
       <h2>Personal por posición</h2>
-      <div class="sub">Escribe el nombre del empleado que ocupa cada posición en el mes seleccionado. Aplica desde ese mes en adelante y aparece en el calendario.</div>
+      <div class="sub">Escribe el nombre del empleado de cada posición. Se guarda automáticamente y aparece en el calendario de todos los meses. Para mover a alguien de turno usa "Cambiar de turno a una persona".</div>
       <div class="roster" id="roster"></div>
     </div>
-    <div class="card" style="margin-top:18px">
-      <h2>Cambio de turno · <span id="rotmes"></span></h2>
-      <div class="sub">Las posiciones no cambian; cambia quién las ocupa. Al rotar una pareja, la persona de noche pasa a la posición de día de su misma planta y viceversa, a partir de este mes. B1 se queda en día.</div>
-      <div class="lbl">Rotación por parejas (día ↔ noche)</div>
-      <div class="rotgrid" id="rotpairs"></div>
-      <div class="row"><button class="primary" id="rotapply">Rotar seleccionados</button><button id="rotreset">Deshacer cambios de este mes</button></div>
-      <div class="lbl" style="margin-top:6px">Intercambio libre entre dos posiciones</div>
+    <div class="card" style="margin-top:18px" id="swapcard">
+      <h2>Cambiar de turno a una persona</h2>
+      <div class="sub">Dos personas intercambian su lugar completo (planta, turno y días) a partir del mes que elijas. Abajo ves cómo queda cada una antes de aplicarlo.</div>
       <div class="row">
-        <div class="field"><label class="lbl" for="swa">Posición A</label><select id="swa"></select></div>
-        <div class="field"><label class="lbl" for="swb">Posición B</label><select id="swb"></select></div>
-        <button id="swapply">Intercambiar</button>
+        <div class="field" style="flex:1 1 200px"><label class="lbl" for="swa">1. ¿Quién cambia?</label><select id="swa"></select></div>
+        <div class="field" style="flex:1 1 200px"><label class="lbl" for="swb">2. ¿Con quién intercambia?</label><select id="swb"></select></div>
+        <div class="field"><label class="lbl" for="swm">3. A partir de</label><input type="month" id="swm"></div>
       </div>
-      <div class="lbl" style="margin-top:6px">Transiciones de este mes</div>
+      <div id="swprev"></div>
+      <div class="row" id="swbtns"></div>
+      <details>
+        <summary>Rotación de todo el equipo (día ↔ noche por parejas)</summary>
+        <div class="sub" style="margin:6px 0">Marca las parejas que rotan. La persona de día pasa a la noche de su misma planta y viceversa, desde el mes seleccionado arriba en "Mes".</div>
+        <div class="rotgrid" id="rotpairs"></div>
+        <div class="row" style="margin-top:8px"><button id="rotapply">Rotar parejas marcadas</button></div>
+      </details>
+      <div class="lbl" style="margin-top:6px">Cambios de turno en <span id="rotmes"></span></div>
       <div class="gaps" id="trans"></div>
+      <div class="row"><button id="rotreset">Deshacer los cambios de este mes</button></div>
     </div>
     <div class="card" id="conn" hidden style="margin-top:18px">
       <h2>Conexión con Google Sheets</h2>
@@ -376,9 +386,9 @@ function transitions(mk){
     let last=null, nxt=null;
     for(let i=1;i<=7 && !last;i++){ const x=addDays(first,-i), c=code(oldPos,x); if(working(c)) last={x,c}; }
     for(let i=0;i<7 && !nxt;i++){ const x=addDays(first,i), c=code(p.id,x); if(working(c)) nxt={x,c}; }
-    let gap=null; if(last&&nxt){ const endOld=last.x.getTime()/36e5+(last.c[0]==="D"?18:30), startNew=nxt.x.getTime()/36e5+(nxt.c[0]==="D"?6:18); gap=Math.round(startNew-endOld); }
+    let gap=null, endOld=null; if(last&&nxt){ endOld=last.x.getTime()/36e5+(last.c[0]==="D"?18:30); const startNew=nxt.x.getTime()/36e5+(nxt.c[0]==="D"?6:18); gap=Math.round(startNew-endOld); }
     const turnChange=oldP.turn!==p.turn;
-    out.push({p, emp, oldPos, turnChange, gap, last, nxt, bad: turnChange && gap!==null && gap<48});
+    out.push({p, emp, oldPos, turnChange, gap, last, nxt, endOld, bad: gap!==null && (turnChange ? gap<48 : gap<24)});
   }
   return out;
 }
@@ -741,29 +751,85 @@ function setMonth(mk){ state.month=mk; $("#month").value=mk; try{localStorage.se
 $("#month").addEventListener("change",e=>{ if(e.target.value) setMonth(e.target.value); });
 $("#limit").addEventListener("change",e=>{ const y=Number(state.month.slice(0,4)), v=Number(e.target.value); if(v>=36&&v<=60){ state.limitOverride[y]=v; saveNames(); render(); } });
 function setAssign(mk,a){ state.months[mk]=state.months[mk]||{ov:{}}; state.months[mk].assign=a; saveMonth(mk); }
+// Escribir un nombre renombra a esa persona en todos los meses (no cambia quién ocupa qué posición)
 $("#roster").addEventListener("change",e=>{ const id=e.target.dataset.id; if(!id) return;
-  const a={...assignment(state.month)}; a[id]=e.target.value.trim()||("["+id+"]"); setAssign(state.month,a); render(); toast("Guardado desde "+mesLabel(state.month)); });
+  const oldE=empOf(id,state.month), newE=e.target.value.trim()||("["+id+"]"); if(oldE===newE) return;
+  if(Object.values(assignment(state.month)).includes(newE)){ toast("Ese nombre ya está en otra posición"); render(); return; }
+  for(const [mk,mo] of Object.entries(state.months)){ if(mo && mo.assign){ let ch=false; for(const k in mo.assign) if(mo.assign[k]===oldE){ mo.assign[k]=newE; ch=true; } if(ch) saveMonth(mk); } }
+  for(const p of POS){ const def=(state.names[p.id]||"").trim()||("["+p.id+"]"); if(def===oldE) state.names[p.id]=isPlaceholder(newE)?"":newE; }
+  saveNames(); render(); toast("Nombre guardado"); });
 const mesLabel = mk => { const [y,m]=mk.split("-").map(Number); return MESES[m-1]+" "+y; };
 const PAIRS=[["C1","C3"],["C2","C4"],["F1","F3"],["F2","F4"],["E1","E2"],["CA1","CA2"],["E3","CA3"]];
-function renderRotation(){
-  const opts=POS.filter(p=>!p.mgr).map(p=>`<option value="${p.id}">${esc(label(p.id))}</option>`).join("");
-  $("#rotpairs").innerHTML=PAIRS.map(([a,b],i)=>`<label class="rp"><input type="checkbox" id="rp-${i}" data-a="${a}" data-b="${b}"><span><b>${a} ↔ ${b}</b> · ${PLANTS[POS.find(p=>p.id===a).base]}<br><span class="note">${esc(nameOf(a)||a)} pasa a noche · ${esc(nameOf(b)||b)} pasa a día</span></span></label>`).join("");
-  $("#swa").innerHTML=opts; $("#swb").innerHTML=opts; $("#swb").selectedIndex=2;
-  $("#rotmes").textContent=mesLabel(state.month);
-  const tr=transitions(state.month);
-  $("#trans").innerHTML = tr.length ? tr.map(t=>`<div class="gapitem" style="${t.bad?"color:var(--gap)":""}"><span><b>${esc(isPlaceholder(t.emp)?t.p.id:t.emp)}</b> ${t.oldPos} → ${t.p.id}${t.turnChange?" · cambio de turno":""}<br><span class="note">${t.gap===null?"Sin turnos cercanos":`Descanso de transición: ${t.gap} h`}${t.bad?" · menos de 48 h: da descanso en su primer turno o ajusta el cambio":""}</span></span>${t.bad&&t.nxt?`<button data-rest="${t.p.id}" data-d="${iso(t.nxt.x)}">Ver turno</button>`:""}</div>`).join("")
-    : `<div class="empty">Nadie cambia de posición en ${mesLabel(state.month)}.</div>`;
+const DIAS_L=["lunes","martes","miércoles","jueves","viernes","sábado","domingo"];
+const turnoTxt = id => { const p=POS.find(q=>q.id===id); return p.turn==="D"?"día (06:00 a 18:00)":"noche (18:00 a 06:00)"; };
+const diasTxt = id => { const p=POS.find(q=>q.id===id); return WD.filter((w,i)=>p.pat[i]).join(", "); };
+const plantaTxt = id => { const p=POS.find(q=>q.id===id); const pl=[...new Set(Object.values(p.pat).map(c=>PLANTS[c.slice(2)]))]; return pl.join(" y "); };
+const quien = (id,mk) => nameOf(id,mk) || id;
+const cuando = (d,h) => `el ${DIAS_L[wd(d)]} ${d.getDate()} de ${MESES[d.getMonth()]} a las ${pad(h)}:00`;
+// Calcula las transiciones como quedarían con una asignación hipotética, sin guardar nada
+function previewTransitions(mk,a){
+  state.months[mk]=state.months[mk]||{ov:{}}; const had=Object.prototype.hasOwnProperty.call(state.months[mk],"assign"), prev=state.months[mk].assign;
+  state.months[mk].assign=a; let out; try{ out=transitions(mk); } finally { if(had) state.months[mk].assign=prev; else delete state.months[mk].assign; }
+  return out;
 }
+function transText(t,mk){
+  if(!t.last||!t.nxt) return {ok:true, txt:`${quien(t.p.id,mk)} no tiene turnos cerca del cambio.`};
+  const h1=t.last.c[0]==="D"?18:6, d1=t.last.c[0]==="D"?t.last.x:addDays(t.last.x,1), h2=t.nxt.c[0]==="D"?6:18;
+  let txt=`Su último turno de ${t.last.c[0]==="D"?"día":"noche"} termina ${cuando(d1,h1)} y su primer turno de ${t.nxt.c[0]==="D"?"día":"noche"} empieza ${cuando(t.nxt.x,h2)}: descansa <b>${t.gap} horas</b>.`;
+  if(t.bad) txt+= t.turnChange ? ` Al pasar de ${t.last.c[0]==="D"?"día a noche":"noche a día"} se recomiendan <b>al menos 48 horas</b> (2 días) de descanso para que el cuerpo se ajuste.` : ` Debe descansar al menos 24 horas entre turnos.`;
+  return {ok:!t.bad, txt};
+}
+function restDays(t){ // turnos nuevos que caen dentro del descanso mínimo
+  const need=(t.turnChange?48:24), out=[];
+  for(let i=0;i<7;i++){ const x=addDays(t.nxt.x,i), c=code(t.p.id,x); if(!working(c)) continue;
+    const start=x.getTime()/36e5+(c[0]==="D"?6:18); if(start-t.endOld<need) out.push(x); else break; }
+  return out;
+}
+function renderRotation(){
+  const mk=$("#swm").value||state.month;
+  const opts=POS.filter(p=>!p.mgr).map(p=>`<option value="${p.id}">${esc(quien(p.id,mk))} · ${p.id} · ${p.turn==="D"?"Día":"Noche"} ${PLANTS[p.base]}</option>`).join("");
+  const va=$("#swa").value||"C2", vb=$("#swb").value||"C3";
+  $("#swa").innerHTML=opts; $("#swb").innerHTML=opts; $("#swa").value=va; $("#swb").value=vb;
+  if(!$("#swm").value) $("#swm").value=state.month;
+  // Vista previa
+  const A=$("#swa").value, B=$("#swb").value;
+  if(A===B){ $("#swprev").innerHTML=`<div class="banner">Elige dos posiciones distintas.</div>`; $("#swbtns").innerHTML=""; }
+  else {
+    const cur=assignment(mk), a={...cur}; [a[A],a[B]]=[a[B],a[A]];
+    const tr=previewTransitions(mk,a).filter(t=>t.p.id===A||t.p.id===B);
+    const card=(id,to)=>{ const t=tr.find(x=>x.p.id===to), tt=t?transText(t,mk):null; return `<div class="swp ${tt&&!tt.ok?"warn":""}">
+      <div class="who">${esc(cur[id] && !isPlaceholder(cur[id]) ? cur[id] : id)}</div>
+      <div class="ba"><span class="lbl">Hoy</span><span>${id} · ${turnoTxt(id)} · ${plantaTxt(id)} · ${diasTxt(id)}</span></div>
+      <div class="ba"><span class="lbl">Desde ${mesLabel(mk)}</span><span><b>${to} · ${turnoTxt(to)} · ${plantaTxt(to)} · ${diasTxt(to)}</b></span></div>
+      ${tt?`<div class="note">${tt.ok?"✓ ":"⚠ "}${tt.txt}</div>`:""}</div>`; };
+    $("#swprev").innerHTML=`<div class="swgrid">${card(A,B)}${card(B,A)}</div>`;
+    const anyBad=tr.some(t=>t.bad);
+    $("#swbtns").innerHTML = anyBad
+      ? `<button class="primary" id="swdo-rest">Aplicar y dar descanso</button><button id="swdo">Aplicar sin descanso</button><span class="note">"Aplicar y dar descanso" marca como descanso los primeros turnos que no cumplen; después asígnales reemplazo en el panel de huecos.</span>`
+      : `<button class="primary" id="swdo">Aplicar intercambio</button>`;
+  }
+  // Rotación por parejas y lista de cambios
+  $("#rotpairs").innerHTML=PAIRS.map(([x,y],i)=>`<label class="rp"><input type="checkbox" id="rp-${i}" data-a="${x}" data-b="${y}"><span><b>${x} ↔ ${y}</b> · ${PLANTS[POS.find(p=>p.id===x).base]}<br><span class="note">${esc(quien(x,state.month))} pasa a noche · ${esc(quien(y,state.month))} pasa a día</span></span></label>`).join("");
+  $("#rotmes").textContent=mesLabel(state.month);
+  const trm=transitions(state.month);
+  $("#trans").innerHTML = trm.length ? trm.map(t=>{ const tt=transText(t,state.month); return `<div class="gapitem" style="${t.bad?"color:var(--gap)":""}"><span><b>${esc(quien(t.p.id))}</b>: de ${t.oldPos} a ${t.p.id}<br><span class="note">${tt.txt}</span></span>${t.bad&&t.nxt?`<button data-rest="${t.p.id}" data-d="${iso(t.nxt.x)}">Ver turno</button>`:""}</div>`; }).join("")
+    : `<div class="empty">Nadie cambia de turno en ${mesLabel(state.month)}.</div>`;
+}
+function applySwap(withRest){
+  const mk=$("#swm").value||state.month, A=$("#swa").value, B=$("#swb").value; if(A===B) return;
+  const a={...assignment(mk)}; [a[A],a[B]]=[a[B],a[A]]; setAssign(mk,a);
+  let n=0; if(withRest){ for(const t of transitions(mk).filter(t=>t.bad && (t.p.id===A||t.p.id===B))) for(const d of restDays(t)){ setOv(t.p.id,d,"","Descanso por cambio de turno"); n++; } }
+  if(mk!==state.month) setMonth(mk); else render();
+  toast(`Intercambio aplicado desde ${mesLabel(mk)}${n?` · ${n} día(s) de descanso marcados: cúbrelos en el panel de huecos`:""}`);
+}
+document.addEventListener("click",e=>{ if(e.target.id==="swdo") applySwap(false); if(e.target.id==="swdo-rest") applySwap(true); });
+["#swa","#swb","#swm"].forEach(s=>$(s).addEventListener("change",()=>renderRotation()));
 $("#rotapply").addEventListener("click",()=>{
-  const sel=[...document.querySelectorAll("#rotpairs input:checked")]; if(!sel.length){ toast("Selecciona al menos una pareja"); return; }
+  const sel=[...document.querySelectorAll("#rotpairs input:checked")]; if(!sel.length){ toast("Marca al menos una pareja"); return; }
   const a={...assignment(state.month)}; for(const c of sel){ const x=c.dataset.a, y=c.dataset.b; [a[x],a[y]]=[a[y],a[x]]; }
-  setAssign(state.month,a); render(); toast(`${sel.length} cambio(s) de turno aplicados desde ${mesLabel(state.month)}`);
+  setAssign(state.month,a); render(); toast(`${sel.length} pareja(s) rotadas desde ${mesLabel(state.month)}. Revisa los descansos en la lista de abajo.`);
 });
-$("#swapply").addEventListener("click",()=>{
-  const x=$("#swa").value, y=$("#swb").value; if(x===y){ toast("Elige dos posiciones distintas"); return; }
-  const a={...assignment(state.month)}; [a[x],a[y]]=[a[y],a[x]]; setAssign(state.month,a); render(); toast(`Intercambio ${x} ↔ ${y} aplicado desde ${mesLabel(state.month)}`);
-});
-$("#rotreset").addEventListener("click",()=>{ const mo=state.months[state.month]; if(mo&&mo.assign){ delete mo.assign; saveMonth(state.month); render(); toast("Este mes vuelve a heredar la asignación del mes anterior"); } });
+$("#rotreset").addEventListener("click",()=>{ const mo=state.months[state.month]; if(mo&&mo.assign){ delete mo.assign; saveMonth(state.month); render(); toast("Este mes vuelve a heredar la asignación del mes anterior"); } else toast("No hay cambios en este mes"); });
 $("#autofill").addEventListener("click",()=>{
   let n=0, miss=0; for(const g of gapsOf(state.month)){ if(count(g.slot,g.d)>=req(g.slot,g.d)) continue; const af=absentFor(g.slot,g.d), c=candidates(g.slot,g.d,af)[0]; if(c){ assignCover(c.p.id,g.d,g.slot,af,c.kind); n++; } else miss++; }
   render(); toast(n||miss ? `${n} hueco(s) cubiertos${miss?`, ${miss} sin candidato`:""}. Revisa los cambios marcados.` : "No hay huecos que cubrir.");
